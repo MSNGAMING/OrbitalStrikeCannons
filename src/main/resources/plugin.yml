@@ -1,0 +1,10 @@
+name: OrbitalStrike
+version: '1.0.0'
+main: com.orbitalstrike.OrbitalStrikePlugin
+api-version: '1.21'
+author: AI-Collaborator
+commands:
+  orbital:
+    description: Give yourself an orbital cannon weapon.
+    permission: orbital.admin
+    usage: /orbital <stab|nuke>

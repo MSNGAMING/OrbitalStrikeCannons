@@ -1,0 +1,20 @@
+# OrbitalStrike Configuration File
+# Optimized for Paper/Purpur 1.21.x & Java 21
+
+settings:
+  # If true, explosions will destroy blocks. If false, only players/entities take damage.
+  terrain-damage: false
+
+  # If true, permissions are 'orbital.strike.stab' and 'orbital.strike.nuke'.
+  # If false, anyone holding the rods can fire them.
+  per-player-permissions: true
+
+cooldowns:
+  # Cooldown values specified in seconds
+  stab: 5.0
+  nuke: 15.0
+
+sounds:
+  # Reference valid Bukkit Sound enums (e.g., BLOCK_BEACON_ACTIVATE, ENTITY_WITHER_SPAWN)
+  stab-launch: "BLOCK_BEACON_ACTIVATE"
+  nuke-launch: "ENTITY_WITHER_SPAWN"
