@@ -1,5 +1,8 @@
 package com.orbitalstrike;
 
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
@@ -9,33 +12,42 @@ import org.bukkit.Material;
 import org.bukkit.entity.FishHook;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerFishEvent;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.scheduler.BukkitRunnable;
 
-import java.util.HashMap;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 public class CannonListener implements Listener {
 
-    private final JavaPlugin plugin;
+    private final OrbitalStrikePlugin plugin;
     private final StrikeManager strikeManager;
-    private final HashMap<UUID, Long> stabCooldowns = new HashMap<>();
-    private final HashMap<UUID, Long> nukeCooldowns = new HashMap<>();
 
-    public CannonListener(JavaPlugin plugin, StrikeManager strikeManager) {
+    // Generous cache eviction to handle custom cooldown durations while preventing memory leaks from offline players
+    private final Cache<UUID, Long> stabCooldowns;
+    private final Cache<UUID, Long> nukeCooldowns;
+
+    public CannonListener(OrbitalStrikePlugin plugin, StrikeManager strikeManager) {
         this.plugin = plugin;
         this.strikeManager = strikeManager;
+        this.stabCooldowns = CacheBuilder.newBuilder().expireAfterWrite(10, TimeUnit.MINUTES).build();
+        this.nukeCooldowns = CacheBuilder.newBuilder().expireAfterWrite(10, TimeUnit.MINUTES).build();
     }
 
-    @EventHandler
-    public void onPlayerFish(PlayerFishEvent event) {
-        if (!plugin.getConfig().getBoolean("settings.enabled", true)) return;
+    public void clearCaches() {
+        this.stabCooldowns.invalidateAll();
+        this.nukeCooldowns.invalidateAll();
+    }
 
+    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
+    public void onPlayerFish(PlayerFishEvent event) {
+        if (!plugin.isStrikesEnabled()) return;
+
+        // Only trigger on confirmed impacts (ground landing or entity caught)
         if (event.getState() != PlayerFishEvent.State.IN_GROUND &&
-                event.getState() != PlayerFishEvent.State.REEL_IN &&
                 event.getState() != PlayerFishEvent.State.CAUGHT_ENTITY) {
             return;
         }
@@ -50,7 +62,7 @@ public class CannonListener implements Listener {
         Location targetLocation = hook.getLocation();
         String typeLower = player.isSneaking() ? "nuke" : "stab";
 
-        if (plugin.getConfig().getBoolean("settings.per-player-permissions", true)) {
+        if (plugin.isPerPlayerPermissions()) {
             if (!player.hasPermission("orbital.use")) {
                 player.sendMessage(Component.text("You lack security clearance to handle weaponized fishing equipment!", NamedTextColor.RED));
                 return;
@@ -61,19 +73,21 @@ public class CannonListener implements Listener {
             }
         }
 
-        HashMap<UUID, Long> activeCooldownMap = typeLower.equals("stab") ? stabCooldowns : nukeCooldowns;
-        double configCooldownSec = plugin.getConfig().getDouble("cooldowns." + typeLower, 5.0);
+        Cache<UUID, Long> activeCooldownMap = typeLower.equals("stab") ? stabCooldowns : nukeCooldowns;
+        double configCooldownSec = typeLower.equals("stab") ? plugin.getStabCooldownSec() : plugin.getNukeCooldownSec();
         long cooldownMs = (long) (configCooldownSec * 1000);
 
-        if (activeCooldownMap.containsKey(player.getUniqueId())) {
-            long timeLeft = activeCooldownMap.get(player.getUniqueId()) + cooldownMs - System.currentTimeMillis();
+        Long lastTrigger = activeCooldownMap.getIfPresent(player.getUniqueId());
+
+        if (lastTrigger != null) {
+            long timeLeft = lastTrigger + cooldownMs - System.currentTimeMillis();
             if (timeLeft > 0) {
                 sendActionBarCooldown(player, timeLeft);
                 return;
             }
         }
 
-        event.getHook().remove();
+        hook.remove();
         long systemTriggerTime = System.currentTimeMillis();
         activeCooldownMap.put(player.getUniqueId(), systemTriggerTime);
 
@@ -82,7 +96,7 @@ public class CannonListener implements Listener {
 
         if (typeLower.equals("stab")) {
             strikeManager.fireStabStrike(targetLocation);
-        } else if (typeLower.equals("nuke")) {
+        } else {
             strikeManager.fireNukeStrike(targetLocation);
         }
     }
@@ -92,32 +106,36 @@ public class CannonListener implements Listener {
         player.sendActionBar(Component.text("⚠️ System Recharging... Wait " + String.format("%.1f", seconds) + "s", NamedTextColor.RED));
     }
 
+    /**
+     * Dispatches action-bar updates offloaded to Paper's AsyncScheduler (thread-safe Adventure API),
+     * avoiding any load on the main server tick loop.
+     */
     private void startCooldownActionBarTracker(Player player, long startTime, long totalDuration, String weaponName) {
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                if (!player.isOnline()) {
-                    cancel();
-                    return;
-                }
-
-                long elapsedTime = System.currentTimeMillis() - startTime;
-                long timeLeft = totalDuration - elapsedTime;
-
-                if (timeLeft <= 0) {
-                    player.sendActionBar(Component.text("⚡ " + weaponName + " MATRIX FULLY CHARGED ⚡", NamedTextColor.GREEN));
-                    cancel();
-                    return;
-                }
-
-                double secondsLeft = timeLeft / 1000.0;
-                player.sendActionBar(Component.text(weaponName + " RECHARGE SYSTEM: " + String.format("%.1f", secondsLeft) + "s", NamedTextColor.GOLD));
+        Consumer<ScheduledTask> trackerTask = scheduledTask -> {
+            if (!player.isOnline()) {
+                scheduledTask.cancel();
+                return;
             }
-        }.runTaskTimer(plugin, 0L, 2L);
+
+            long elapsedTime = System.currentTimeMillis() - startTime;
+            long timeLeft = totalDuration - elapsedTime;
+
+            if (timeLeft <= 0) {
+                player.sendActionBar(Component.text("⚡ " + weaponName + " MATRIX FULLY CHARGED ⚡", NamedTextColor.GREEN));
+                scheduledTask.cancel();
+                return;
+            }
+
+            double secondsLeft = timeLeft / 1000.0;
+            player.sendActionBar(Component.text(weaponName + " RECHARGE SYSTEM: " + String.format("%.1f", secondsLeft) + "s", NamedTextColor.GOLD));
+        };
+
+        plugin.getServer().getAsyncScheduler().runAtFixedRate(plugin, trackerTask, 0, 100, TimeUnit.MILLISECONDS);
     }
 
     private void broadcastStrikeAlert(Player shooter, String strikeType, Location loc) {
-        String coordsString = String.format("X: %d, Y: %d, Z: %d", loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+        String worldName = loc.getWorld() != null ? loc.getWorld().getName() : "world";
+        String coordsString = String.format("[%s] X: %d, Y: %d, Z: %d", worldName, loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
         Component alertMessage;
 
         if (strikeType.equalsIgnoreCase("nuke")) {

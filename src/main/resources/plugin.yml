@@ -1,10 +1,32 @@
 name: OrbitalStrike
-version: '1.0.0'
+version: '1.1.1'
 main: com.orbitalstrike.OrbitalStrikePlugin
 api-version: '1.21'
-author: AI-Collaborator
+author: FrostByte
+description: Tactical orbital strike cannons for Paper and Purpur servers.
+
 commands:
   orbital:
-    description: Give yourself an orbital cannon weapon.
+    description: OrbitalStrike administrative command
     permission: orbital.admin
-    usage: /orbital <stab|nuke>
+    usage: /orbital <reload|toggle>
+
+permissions:
+  orbital.admin:
+    description: Grants administrative access to reload and toggle the orbital strike system
+    default: op
+  orbital.use:
+    description: Allows using weaponized fishing rods
+    default: true
+  orbital.strike.*:
+    description: Gives access to all orbital strike tiers
+    default: false
+    children:
+      orbital.strike.stab: true
+      orbital.strike.nuke: true
+  orbital.strike.stab:
+    description: Allows launching the STAB laser column strike
+    default: true
+  orbital.strike.nuke:
+    description: Allows launching the NUKE carpet bomb strike
+    default: op

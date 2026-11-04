@@ -2,6 +2,9 @@
 # Optimized for Paper/Purpur 1.21.x & Java 21
 
 settings:
+  # Master switch to enable/disable the orbital strike system
+  enabled: true
+
   # If true, explosions will destroy blocks. If false, only players/entities take damage.
   terrain-damage: false
 

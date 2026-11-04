@@ -2,37 +2,44 @@ package com.orbitalstrike;
 
 import org.bukkit.Color;
 import org.bukkit.Location;
+import org.bukkit.NamespacedKey;
 import org.bukkit.Particle;
-import org.bukkit.Sound;
+import org.bukkit.World;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityExplodeEvent;
-import org.bukkit.metadata.FixedMetadataValue;
-import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.Vector;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class StrikeManager implements Listener {
 
-    private final JavaPlugin plugin;
-    private final String METADATA_KEY = "orbital_strike_payload";
+    private final OrbitalStrikePlugin plugin;
+    private final NamespacedKey payloadKey;
 
-    public StrikeManager(JavaPlugin plugin) {
+    private record SpawnPayload(double x, double z) {}
+
+    public StrikeManager(OrbitalStrikePlugin plugin) {
         this.plugin = plugin;
-        plugin.getServer().getPluginManager().registerEvents(this, plugin);
+        this.payloadKey = new NamespacedKey(plugin, "orbital_strike_payload");
     }
 
     public void fireStabStrike(Location target) {
+        World world = target.getWorld();
+        if (world == null) return;
+
         Location skyOrigin = target.clone();
-        int maxHeight = target.getWorld().getMaxHeight() - 5;
+        int maxHeight = world.getMaxHeight() - 5;
         skyOrigin.setY(Math.min(maxHeight, target.getY() + 50));
 
         spawnLaserBeam(target.clone(), maxHeight, 40);
-
-        String soundName = plugin.getConfig().getString("sounds.stab-launch", "BLOCK_BEACON_ACTIVATE");
-        playSoundSafely(target, soundName, 4.0f, 0.5f);
+        world.playSound(target, plugin.getStabSound(), 4.0f, 0.5f);
 
         new BukkitRunnable() {
             int count = 0;
@@ -45,8 +52,8 @@ public class StrikeManager implements Listener {
 
                 TNTPrimed tnt = skyOrigin.getWorld().spawn(skyOrigin, TNTPrimed.class);
                 tnt.setFuseTicks(30);
-                tnt.setVelocity(new Vector(0, -2.5, 0));
-                tnt.setMetadata(METADATA_KEY, new FixedMetadataValue(plugin, true));
+                tnt.setVelocity(new Vector(0, -1.2, 0));
+                tnt.getPersistentDataContainer().set(payloadKey, PersistentDataType.BYTE, (byte) 1);
 
                 skyOrigin.getWorld().spawnParticle(Particle.SONIC_BOOM, skyOrigin, 3);
                 count++;
@@ -55,15 +62,17 @@ public class StrikeManager implements Listener {
     }
 
     public void fireNukeStrike(Location target) {
+        World world = target.getWorld();
+        if (world == null) return;
+
         Location skyCenter = target.clone();
-        int maxHeight = target.getWorld().getMaxHeight() - 10;
+        int maxHeight = world.getMaxHeight() - 10;
         skyCenter.setY(Math.min(maxHeight, target.getY() + 60));
 
         spawnLaserBeam(target.clone(), maxHeight, 60);
 
-        String soundName = plugin.getConfig().getString("sounds.nuke-launch", "ENTITY_WITHER_SPAWN");
-        playSoundSafely(target, soundName, 5.0f, 0.5f);
-        target.getWorld().strikeLightningEffect(target);
+        world.playSound(target, plugin.getNukeSound(), 5.0f, 0.5f);
+        world.strikeLightningEffect(target);
 
         new BukkitRunnable() {
             @Override
@@ -87,10 +96,29 @@ public class StrikeManager implements Listener {
         }.runTaskLater(plugin, 25L);
     }
 
+    /**
+     * Spawns targeting laser beam directly on the server tick thread.
+     * All particle allocations and coordinate math are precalculated to eliminate tick overhead.
+     */
     private void spawnLaserBeam(Location targetFloor, int skyHeight, int lifespanTicks) {
+        final World world = targetFloor.getWorld();
+        if (world == null) return;
+
+        final Particle.DustOptions laserStyle = new Particle.DustOptions(Color.fromRGB(255, 0, 0), 2.0f);
+        final double floorX = targetFloor.getX();
+        final double floorY = targetFloor.getY();
+        final double floorZ = targetFloor.getZ();
+
+        // Precompute ground circle offsets once
+        final double[][] ringOffsets = new double[8][2];
+        for (int i = 0; i < 8; i++) {
+            double rad = Math.toRadians(i * 45);
+            ringOffsets[i][0] = Math.cos(rad) * 0.8;
+            ringOffsets[i][1] = Math.sin(rad) * 0.8;
+        }
+
         new BukkitRunnable() {
             int elapsed = 0;
-            final Particle.DustOptions laserStyle = new Particle.DustOptions(Color.fromRGB(255, 0, 0), 2.0f);
 
             @Override
             public void run() {
@@ -99,17 +127,14 @@ public class StrikeManager implements Listener {
                     return;
                 }
 
-                double startY = targetFloor.getY();
-                for (double y = startY; y <= skyHeight; y += 1.5) {
-                    Location point = targetFloor.clone();
-                    point.setY(y);
-                    point.getWorld().spawnParticle(Particle.DUST, point, 1, 0.0, 0.0, 0.0, 0.0, laserStyle, true);
+                // Render vertical laser beam directly without object churn
+                for (double y = floorY; y <= skyHeight; y += 1.5) {
+                    world.spawnParticle(Particle.DUST, floorX, y, floorZ, 1, 0.0, 0.0, 0.0, 0.0, laserStyle, true);
                 }
 
-                for (int degree = 0; degree < 360; degree += 45) {
-                    double rad = Math.toRadians(degree);
-                    Location ringPoint = targetFloor.clone().add(Math.cos(rad) * 0.8, 0.2, Math.sin(rad) * 0.8);
-                    ringPoint.getWorld().spawnParticle(Particle.DUST, ringPoint, 1, 0, 0, 0, 0, laserStyle, true);
+                // Render targeting circle at the base
+                for (double[] offset : ringOffsets) {
+                    world.spawnParticle(Particle.DUST, floorX + offset[0], floorY + 0.2, floorZ + offset[1], 1, 0.0, 0.0, 0.0, 0.0, laserStyle, true);
                 }
 
                 elapsed++;
@@ -117,39 +142,41 @@ public class StrikeManager implements Listener {
         }.runTaskTimer(plugin, 0L, 1L);
     }
 
+    /**
+     * Uses Paper's AsyncScheduler to precompute circular ring trigonometry asynchronously,
+     * then dispatches TNT entities safely to the world on the main server thread.
+     */
     private void spawnConcentricRing(Location center, int tntCount, double radius) {
-        for (int i = 0; i < tntCount; i++) {
-            double angle = (2 * Math.PI / tntCount) * i;
-            double x = Math.cos(angle) * radius;
-            double z = Math.sin(angle) * radius;
+        plugin.getServer().getAsyncScheduler().runNow(plugin, task -> {
+            List<SpawnPayload> payloads = new ArrayList<>(tntCount);
+            for (int i = 0; i < tntCount; i++) {
+                double angle = (2 * Math.PI / tntCount) * i;
+                payloads.add(new SpawnPayload(Math.cos(angle) * radius, Math.sin(angle) * radius));
+            }
 
-            Location spawnLoc = center.clone().add(x, 0, z);
-            TNTPrimed tnt = spawnLoc.getWorld().spawn(spawnLoc, TNTPrimed.class);
+            // Return to the main server thread for world entity spawning
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                World world = center.getWorld();
+                if (world == null) return;
 
-            tnt.setFuseTicks(50);
-            tnt.setVelocity(new Vector(x * 0.05, -1.0, z * 0.05));
-            tnt.setMetadata(METADATA_KEY, new FixedMetadataValue(plugin, true));
-        }
+                for (SpawnPayload p : payloads) {
+                    Location spawnLoc = center.clone().add(p.x(), 0, p.z());
+                    TNTPrimed tnt = world.spawn(spawnLoc, TNTPrimed.class);
+                    tnt.setFuseTicks(50);
+                    tnt.setVelocity(new Vector(p.x() * 0.05, -0.6, p.z() * 0.05));
+                    tnt.getPersistentDataContainer().set(payloadKey, PersistentDataType.BYTE, (byte) 1);
+                }
+            });
+        });
     }
 
-    @EventHandler
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onExplosion(EntityExplodeEvent event) {
         Entity entity = event.getEntity();
-        if (entity != null && entity.hasMetadata(METADATA_KEY)) {
-            boolean allowTerrainDamage = plugin.getConfig().getBoolean("settings.terrain-damage", false);
-            if (!allowTerrainDamage) {
+        if (entity != null && entity.getPersistentDataContainer().has(payloadKey, PersistentDataType.BYTE)) {
+            if (!plugin.isTerrainDamage()) {
                 event.blockList().clear();
             }
-        }
-    }
-
-    private void playSoundSafely(Location loc, String soundEnumString, float vol, float pitch) {
-        try {
-            Sound sound = Sound.valueOf(soundEnumString.toUpperCase());
-            loc.getWorld().playSound(loc, sound, vol, pitch);
-        } catch (IllegalArgumentException e) {
-            plugin.getLogger().warning("Invalid sound identifier specified inside config: " + soundEnumString);
-            loc.getWorld().playSound(loc, Sound.ENTITY_GENERIC_EXPLODE, vol, pitch);
         }
     }
 }
