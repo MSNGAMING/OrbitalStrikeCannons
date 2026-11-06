@@ -6,7 +6,7 @@
 
     <groupId>com.orbitalstrike</groupId>
     <artifactId>OrbitalStrike</artifactId>
-    <version>1.1.1</version>
+    <version>1.1.2</version>
 
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
@@ -21,11 +21,11 @@
     </repositories>
 
     <dependencies>
-        <!-- Corrected Paper API versioning format for 1.21.x -->
+        <!-- Paper API dependency targeted to 1.21.1 for 1.21.x & 26.x compatibility -->
         <dependency>
             <groupId>io.papermc.paper</groupId>
             <artifactId>paper-api</artifactId>
-            <version>1.21.4-R0.1-SNAPSHOT</version>
+            <version>1.21.1-R0.1-SNAPSHOT</version>
             <scope>provided</scope>
         </dependency>
     </dependencies>

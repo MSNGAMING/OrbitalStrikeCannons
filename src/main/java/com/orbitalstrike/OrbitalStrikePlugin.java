@@ -3,9 +3,13 @@ package com.orbitalstrike;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.plugin.lifecycle.event.LifecycleEventManager;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
+import org.bukkit.NamespacedKey;
+import org.bukkit.Registry;
 import org.bukkit.Sound;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
+
+import java.lang.reflect.Method;
 
 public final class OrbitalStrikePlugin extends JavaPlugin {
 
@@ -61,11 +65,34 @@ public final class OrbitalStrikePlugin extends JavaPlugin {
 
     private Sound parseSound(String path, Sound fallback) {
         String soundStr = getConfig().getString(path);
-        if (soundStr != null) {
-            String normalized = soundStr.trim().toUpperCase().replace('.', '_').replace(':', '_');
+        if (soundStr != null && !soundStr.isBlank()) {
+            String raw = soundStr.trim();
+
+            // 1. Try Registry.SOUNDS lookup (standard across Paper 1.21.x and future releases)
             try {
-                return Sound.valueOf(normalized);
-            } catch (IllegalArgumentException e) {
+                String keyStr = raw.toLowerCase().replace('_', '.').replace(':', '.');
+                if (keyStr.startsWith("minecraft.")) {
+                    keyStr = keyStr.substring("minecraft.".length());
+                }
+                NamespacedKey key = NamespacedKey.minecraft(keyStr);
+                Sound regSound = Registry.SOUNDS.get(key);
+                if (regSound != null) {
+                    return regSound;
+                }
+            } catch (Throwable ignored) {
+                // Fall through to reflection lookup
+            }
+
+            // 2. Try reflection valueOf to prevent LinkageError / IncompatibleClassChangeError
+            // between Paper 1.21.1 (Sound as Enum class) and Paper 1.21.4 (Sound as OldEnum interface)
+            try {
+                String normalized = raw.toUpperCase().replace('.', '_').replace(':', '_');
+                Method valueOfMethod = Sound.class.getMethod("valueOf", String.class);
+                Object result = valueOfMethod.invoke(null, normalized);
+                if (result instanceof Sound sound) {
+                    return sound;
+                }
+            } catch (Throwable e) {
                 getLogger().warning("Invalid sound identifier in config: " + soundStr + ". Defaulting to " + fallback);
             }
         }
