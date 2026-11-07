@@ -22,6 +22,7 @@ public final class OrbitalStrikePlugin extends JavaPlugin {
     private boolean perPlayerPermissions;
     private double stabCooldownSec;
     private double nukeCooldownSec;
+    private double nukeRadius;
     private Sound stabSound;
     private Sound nukeSound;
 
@@ -53,6 +54,7 @@ public final class OrbitalStrikePlugin extends JavaPlugin {
         this.perPlayerPermissions = getConfig().getBoolean("settings.per-player-permissions", true);
         this.stabCooldownSec = getConfig().getDouble("cooldowns.stab", 5.0);
         this.nukeCooldownSec = getConfig().getDouble("cooldowns.nuke", 15.0);
+        this.nukeRadius = Math.max(1.0, getConfig().getDouble("settings.nuke-radius", 12.0));
         this.stabSound = parseSound("sounds.stab-launch", Sound.BLOCK_BEACON_ACTIVATE);
         this.nukeSound = parseSound("sounds.nuke-launch", Sound.ENTITY_WITHER_SPAWN);
     }
@@ -60,6 +62,12 @@ public final class OrbitalStrikePlugin extends JavaPlugin {
     public void setStrikesEnabled(boolean enabled) {
         this.strikesEnabled = enabled;
         getConfig().set("settings.enabled", enabled);
+        saveConfig();
+    }
+
+    public void setNukeRadius(double radius) {
+        this.nukeRadius = radius;
+        getConfig().set("settings.nuke-radius", radius);
         saveConfig();
     }
 
@@ -104,6 +112,7 @@ public final class OrbitalStrikePlugin extends JavaPlugin {
     public boolean isPerPlayerPermissions() { return perPlayerPermissions; }
     public double getStabCooldownSec() { return stabCooldownSec; }
     public double getNukeCooldownSec() { return nukeCooldownSec; }
+    public double getNukeRadius() { return nukeRadius; }
     public Sound getStabSound() { return stabSound; }
     public Sound getNukeSound() { return nukeSound; }
     public StrikeManager getStrikeManager() { return strikeManager; }

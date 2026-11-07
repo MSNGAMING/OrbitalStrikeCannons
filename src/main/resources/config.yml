@@ -12,12 +12,16 @@ settings:
   # If false, anyone holding the rods can fire them.
   per-player-permissions: true
 
+  # Outer radius (in blocks) for the NUKE carpet bomb strike.
+  # Concentric rings scale proportionally to this value.
+  nuke-radius: 12.0
+
 cooldowns:
   # Cooldown values specified in seconds
   stab: 5.0
   nuke: 15.0
 
 sounds:
-  # Reference valid Bukkit Sound enums (e.g., BLOCK_BEACON_ACTIVATE, ENTITY_WITHER_SPAWN)
+  # Reference valid Bukkit Sound enums or Minecraft sound keys (e.g. BLOCK_BEACON_ACTIVATE, entity.wither.spawn)
   stab-launch: "BLOCK_BEACON_ACTIVATE"
   nuke-launch: "ENTITY_WITHER_SPAWN"

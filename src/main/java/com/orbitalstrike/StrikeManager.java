@@ -5,11 +5,13 @@ import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Particle;
 import org.bukkit.World;
+import org.bukkit.block.Block;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.scheduler.BukkitRunnable;
@@ -30,19 +32,26 @@ public class StrikeManager implements Listener {
         this.payloadKey = new NamespacedKey(plugin, "orbital_strike_payload");
     }
 
+    /**
+     * Fires the STAB surgical strike.
+     * TNTs maintain strict vertical alignment and only detonate when contacting the surface
+     * or the bottom of the crater, boring a concentrated deep hole.
+     */
     public void fireStabStrike(Location target) {
         World world = target.getWorld();
         if (world == null) return;
 
-        Location skyOrigin = target.clone();
+        // Center on the target block column
+        Location skyOrigin = new Location(world, target.getBlockX() + 0.5, 0, target.getBlockZ() + 0.5);
         int maxHeight = world.getMaxHeight() - 5;
-        skyOrigin.setY(Math.min(maxHeight, target.getY() + 50));
+        skyOrigin.setY(Math.min(maxHeight, target.getY() + 45));
 
-        spawnLaserBeam(target.clone(), maxHeight, 40);
+        spawnLaserBeam(target.clone(), maxHeight, 90);
         world.playSound(target, plugin.getStabSound(), 4.0f, 0.5f);
 
         new BukkitRunnable() {
             int count = 0;
+
             @Override
             public void run() {
                 if (count >= 25) {
@@ -50,17 +59,53 @@ public class StrikeManager implements Listener {
                     return;
                 }
 
-                TNTPrimed tnt = skyOrigin.getWorld().spawn(skyOrigin, TNTPrimed.class);
-                tnt.setFuseTicks(30);
-                tnt.setVelocity(new Vector(0, -1.2, 0));
+                // Generous safety fuse so TNT never detonates in mid-air
+                TNTPrimed tnt = world.spawn(skyOrigin, TNTPrimed.class);
+                tnt.setFuseTicks(300);
+                tnt.setVelocity(new Vector(0, -1.8, 0));
                 tnt.getPersistentDataContainer().set(payloadKey, PersistentDataType.BYTE, (byte) 1);
 
-                skyOrigin.getWorld().spawnParticle(Particle.SONIC_BOOM, skyOrigin, 3);
+                world.spawnParticle(Particle.SONIC_BOOM, skyOrigin, 2);
+
+                // Per-tick impact tracker: keeps TNT in a strictly vertical line,
+                // and detonates immediately upon touching the surface or crater bottom.
+                new BukkitRunnable() {
+                    @Override
+                    public void run() {
+                        if (!tnt.isValid() || tnt.isDead()) {
+                            cancel();
+                            return;
+                        }
+
+                        // Override velocity to lock horizontal movement and maintain downward force
+                        Vector vel = tnt.getVelocity();
+                        tnt.setVelocity(new Vector(0, Math.min(vel.getY(), -1.4), 0));
+
+                        Location loc = tnt.getLocation();
+                        Block blockAt = loc.getBlock();
+                        Block blockBelow = loc.clone().subtract(0, 0.4, 0).getBlock();
+
+                        boolean hitSurface = tnt.isOnGround()
+                                || !blockAt.isPassable()
+                                || !blockBelow.isPassable()
+                                || loc.getY() <= world.getMinHeight() + 2;
+
+                        if (hitSurface) {
+                            tnt.setFuseTicks(0);
+                            cancel();
+                        }
+                    }
+                }.runTaskTimer(plugin, 1L, 1L);
+
                 count++;
             }
-        }.runTaskTimer(plugin, 10L, 2L);
+        }.runTaskTimer(plugin, 10L, 3L);
     }
 
+    /**
+     * Fires the NUKE carpet bomb strike.
+     * The 3 concentric rings scale dynamically based on the configured nuke-radius.
+     */
     public void fireNukeStrike(Location target) {
         World world = target.getWorld();
         if (world == null) return;
@@ -69,29 +114,34 @@ public class StrikeManager implements Listener {
         int maxHeight = world.getMaxHeight() - 10;
         skyCenter.setY(Math.min(maxHeight, target.getY() + 60));
 
-        spawnLaserBeam(target.clone(), maxHeight, 60);
+        spawnLaserBeam(target.clone(), maxHeight, 70);
 
         world.playSound(target, plugin.getNukeSound(), 5.0f, 0.5f);
         world.strikeLightningEffect(target);
 
+        double maxRadius = plugin.getNukeRadius();
+        double innerRadius = Math.max(1.5, maxRadius * 0.22);
+        double midRadius = Math.max(3.0, maxRadius * 0.52);
+        double outerRadius = Math.max(5.0, maxRadius);
+
         new BukkitRunnable() {
             @Override
             public void run() {
-                spawnConcentricRing(skyCenter, 5, 2.5);
+                spawnConcentricRing(skyCenter, 5, innerRadius);
             }
         }.runTaskLater(plugin, 15L);
 
         new BukkitRunnable() {
             @Override
             public void run() {
-                spawnConcentricRing(skyCenter, 12, 6.0);
+                spawnConcentricRing(skyCenter, 12, midRadius);
             }
         }.runTaskLater(plugin, 20L);
 
         new BukkitRunnable() {
             @Override
             public void run() {
-                spawnConcentricRing(skyCenter, 20, 11.5);
+                spawnConcentricRing(skyCenter, 20, outerRadius);
             }
         }.runTaskLater(plugin, 25L);
     }
@@ -168,6 +218,15 @@ public class StrikeManager implements Listener {
                 }
             });
         });
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onTntDamage(EntityDamageEvent event) {
+        Entity entity = event.getEntity();
+        if (entity instanceof TNTPrimed && entity.getPersistentDataContainer().has(payloadKey, PersistentDataType.BYTE)) {
+            // Cancel explosion damage on payload TNT so earlier detonations don't prematurely shorten the fuse
+            event.setCancelled(true);
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)

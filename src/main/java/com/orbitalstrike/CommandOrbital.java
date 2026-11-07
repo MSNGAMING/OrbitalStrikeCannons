@@ -1,6 +1,7 @@
 package com.orbitalstrike;
 
 import com.mojang.brigadier.Command;
+import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
@@ -38,6 +39,18 @@ public class CommandOrbital {
                             }
                             return Command.SINGLE_SUCCESS;
                         })
+                )
+                .then(Commands.literal("setnukeradius")
+                        .then(Commands.argument("radius", DoubleArgumentType.doubleArg(1.0, 100.0))
+                                .executes(context -> {
+                                    double radius = DoubleArgumentType.getDouble(context, "radius");
+                                    plugin.setNukeRadius(radius);
+                                    context.getSource().getSender().sendMessage(
+                                            Component.text("Orbital NUKE strike radius updated to " + radius + " blocks.", NamedTextColor.GREEN)
+                                    );
+                                    return Command.SINGLE_SUCCESS;
+                                })
+                        )
                 )
                 .build();
     }
