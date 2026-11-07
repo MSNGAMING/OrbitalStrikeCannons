@@ -120,15 +120,13 @@ public final class OrbitalStrikePlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        // Cancel all standard synchronous scheduler tasks
-        getServer().getScheduler().cancelTasks(this);
-
-        // Cancel all Paper AsyncScheduler tasks
+        // Cancel all Paper native region and async schedulers
+        try {
+            getServer().getGlobalRegionScheduler().cancelTasks(this);
+        } catch (Throwable ignored) {}
         try {
             getServer().getAsyncScheduler().cancelTasks(this);
-        } catch (Throwable ignored) {
-            // Guard against environments where async scheduler cancellation is not present
-        }
+        } catch (Throwable ignored) {}
 
         if (this.cannonListener != null) {
             this.cannonListener.clearCaches();

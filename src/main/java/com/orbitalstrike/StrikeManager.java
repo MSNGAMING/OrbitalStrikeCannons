@@ -1,5 +1,6 @@
 package com.orbitalstrike;
 
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.Color;
 import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
@@ -14,7 +15,6 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.persistence.PersistentDataType;
-import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.Vector;
 
 import java.util.ArrayList;
@@ -33,8 +33,8 @@ public class StrikeManager implements Listener {
     }
 
     /**
-     * Fires the STAB surgical strike.
-     * TNTs maintain strict vertical alignment and only detonate when contacting the surface
+     * Fires the STAB surgical strike using Paper's native RegionScheduler and EntityScheduler.
+     * Charges maintain strict vertical alignment and only detonate when contacting the surface
      * or the bottom of the crater, boring a concentrated deep hole.
      */
     public void fireStabStrike(Location target) {
@@ -49,61 +49,54 @@ public class StrikeManager implements Listener {
         spawnLaserBeam(target.clone(), maxHeight, 90);
         world.playSound(target, plugin.getStabSound(), 4.0f, 0.5f);
 
-        new BukkitRunnable() {
-            int count = 0;
+        int[] count = {0};
+        plugin.getServer().getRegionScheduler().runAtFixedRate(plugin, skyOrigin, spawnTask -> {
+            if (count[0] >= 25) {
+                spawnTask.cancel();
+                return;
+            }
 
-            @Override
-            public void run() {
-                if (count >= 25) {
-                    cancel();
+            // Generous safety fuse so TNT never detonates in mid-air
+            TNTPrimed tnt = world.spawn(skyOrigin, TNTPrimed.class);
+            tnt.setFuseTicks(300);
+            tnt.setVelocity(new Vector(0, -1.8, 0));
+            tnt.getPersistentDataContainer().set(payloadKey, PersistentDataType.BYTE, (byte) 1);
+
+            world.spawnParticle(Particle.SONIC_BOOM, skyOrigin, 2);
+
+            // Native Paper EntityScheduler: tracks TNT per-tick on its regional thread,
+            // keeping it strictly vertical and detonating instantly upon surface contact.
+            tnt.getScheduler().runAtFixedRate(plugin, impactTask -> {
+                if (!tnt.isValid() || tnt.isDead()) {
+                    impactTask.cancel();
                     return;
                 }
 
-                // Generous safety fuse so TNT never detonates in mid-air
-                TNTPrimed tnt = world.spawn(skyOrigin, TNTPrimed.class);
-                tnt.setFuseTicks(300);
-                tnt.setVelocity(new Vector(0, -1.8, 0));
-                tnt.getPersistentDataContainer().set(payloadKey, PersistentDataType.BYTE, (byte) 1);
+                // Override velocity to lock horizontal movement and maintain downward force
+                Vector vel = tnt.getVelocity();
+                tnt.setVelocity(new Vector(0, Math.min(vel.getY(), -1.4), 0));
 
-                world.spawnParticle(Particle.SONIC_BOOM, skyOrigin, 2);
+                Location loc = tnt.getLocation();
+                Block blockAt = loc.getBlock();
+                Block blockBelow = loc.clone().subtract(0, 0.4, 0).getBlock();
 
-                // Per-tick impact tracker: keeps TNT in a strictly vertical line,
-                // and detonates immediately upon touching the surface or crater bottom.
-                new BukkitRunnable() {
-                    @Override
-                    public void run() {
-                        if (!tnt.isValid() || tnt.isDead()) {
-                            cancel();
-                            return;
-                        }
+                boolean hitSurface = tnt.isOnGround()
+                        || !blockAt.isPassable()
+                        || !blockBelow.isPassable()
+                        || loc.getY() <= world.getMinHeight() + 2;
 
-                        // Override velocity to lock horizontal movement and maintain downward force
-                        Vector vel = tnt.getVelocity();
-                        tnt.setVelocity(new Vector(0, Math.min(vel.getY(), -1.4), 0));
+                if (hitSurface) {
+                    tnt.setFuseTicks(0);
+                    impactTask.cancel();
+                }
+            }, null, 1L, 1L);
 
-                        Location loc = tnt.getLocation();
-                        Block blockAt = loc.getBlock();
-                        Block blockBelow = loc.clone().subtract(0, 0.4, 0).getBlock();
-
-                        boolean hitSurface = tnt.isOnGround()
-                                || !blockAt.isPassable()
-                                || !blockBelow.isPassable()
-                                || loc.getY() <= world.getMinHeight() + 2;
-
-                        if (hitSurface) {
-                            tnt.setFuseTicks(0);
-                            cancel();
-                        }
-                    }
-                }.runTaskTimer(plugin, 1L, 1L);
-
-                count++;
-            }
-        }.runTaskTimer(plugin, 10L, 3L);
+            count[0]++;
+        }, 10L, 3L);
     }
 
     /**
-     * Fires the NUKE carpet bomb strike.
+     * Fires the NUKE carpet bomb strike using Paper's native RegionScheduler.
      * The 3 concentric rings scale dynamically based on the configured nuke-radius.
      */
     public void fireNukeStrike(Location target) {
@@ -124,30 +117,18 @@ public class StrikeManager implements Listener {
         double midRadius = Math.max(3.0, maxRadius * 0.52);
         double outerRadius = Math.max(5.0, maxRadius);
 
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                spawnConcentricRing(skyCenter, 5, innerRadius);
-            }
-        }.runTaskLater(plugin, 15L);
+        plugin.getServer().getRegionScheduler().runDelayed(plugin, skyCenter,
+                task -> spawnConcentricRing(skyCenter, 5, innerRadius), 15L);
 
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                spawnConcentricRing(skyCenter, 12, midRadius);
-            }
-        }.runTaskLater(plugin, 20L);
+        plugin.getServer().getRegionScheduler().runDelayed(plugin, skyCenter,
+                task -> spawnConcentricRing(skyCenter, 12, midRadius), 20L);
 
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                spawnConcentricRing(skyCenter, 20, outerRadius);
-            }
-        }.runTaskLater(plugin, 25L);
+        plugin.getServer().getRegionScheduler().runDelayed(plugin, skyCenter,
+                task -> spawnConcentricRing(skyCenter, 20, outerRadius), 25L);
     }
 
     /**
-     * Spawns targeting laser beam directly on the server tick thread.
+     * Spawns targeting laser beam directly on Paper's RegionScheduler.
      * All particle allocations and coordinate math are precalculated to eliminate tick overhead.
      */
     private void spawnLaserBeam(Location targetFloor, int skyHeight, int lifespanTicks) {
@@ -167,34 +148,30 @@ public class StrikeManager implements Listener {
             ringOffsets[i][1] = Math.sin(rad) * 0.8;
         }
 
-        new BukkitRunnable() {
-            int elapsed = 0;
-
-            @Override
-            public void run() {
-                if (elapsed >= lifespanTicks) {
-                    cancel();
-                    return;
-                }
-
-                // Render vertical laser beam directly without object churn
-                for (double y = floorY; y <= skyHeight; y += 1.5) {
-                    world.spawnParticle(Particle.DUST, floorX, y, floorZ, 1, 0.0, 0.0, 0.0, 0.0, laserStyle, true);
-                }
-
-                // Render targeting circle at the base
-                for (double[] offset : ringOffsets) {
-                    world.spawnParticle(Particle.DUST, floorX + offset[0], floorY + 0.2, floorZ + offset[1], 1, 0.0, 0.0, 0.0, 0.0, laserStyle, true);
-                }
-
-                elapsed++;
+        int[] elapsed = {0};
+        plugin.getServer().getRegionScheduler().runAtFixedRate(plugin, targetFloor, task -> {
+            if (elapsed[0] >= lifespanTicks) {
+                task.cancel();
+                return;
             }
-        }.runTaskTimer(plugin, 0L, 1L);
+
+            // Render vertical laser beam directly without object churn
+            for (double y = floorY; y <= skyHeight; y += 1.5) {
+                world.spawnParticle(Particle.DUST, floorX, y, floorZ, 1, 0.0, 0.0, 0.0, 0.0, laserStyle, true);
+            }
+
+            // Render targeting circle at the base
+            for (double[] offset : ringOffsets) {
+                world.spawnParticle(Particle.DUST, floorX + offset[0], floorY + 0.2, floorZ + offset[1], 1, 0.0, 0.0, 0.0, 0.0, laserStyle, true);
+            }
+
+            elapsed[0]++;
+        }, 1L, 1L);
     }
 
     /**
      * Uses Paper's AsyncScheduler to precompute circular ring trigonometry asynchronously,
-     * then dispatches TNT entities safely to the world on the main server thread.
+     * then dispatches TNT entities safely to the regional chunk thread via RegionScheduler.
      */
     private void spawnConcentricRing(Location center, int tntCount, double radius) {
         plugin.getServer().getAsyncScheduler().runNow(plugin, task -> {
@@ -204,8 +181,8 @@ public class StrikeManager implements Listener {
                 payloads.add(new SpawnPayload(Math.cos(angle) * radius, Math.sin(angle) * radius));
             }
 
-            // Return to the main server thread for world entity spawning
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
+            // Return to the chunk's regional thread for world entity spawning
+            plugin.getServer().getRegionScheduler().execute(plugin, center, () -> {
                 World world = center.getWorld();
                 if (world == null) return;
 
