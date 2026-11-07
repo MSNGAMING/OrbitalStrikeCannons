@@ -97,7 +97,7 @@ public class StrikeManager implements Listener {
 
     /**
      * Fires the NUKE carpet bomb strike using Paper's native RegionScheduler.
-     * The 3 concentric rings scale dynamically based on the configured nuke-radius.
+     * The 3 concentric rings and their TNT counts scale dynamically based on the configured nuke-radius.
      */
     public void fireNukeStrike(Location target) {
         World world = target.getWorld();
@@ -117,14 +117,19 @@ public class StrikeManager implements Listener {
         double midRadius = Math.max(3.0, maxRadius * 0.52);
         double outerRadius = Math.max(5.0, maxRadius);
 
-        plugin.getServer().getRegionScheduler().runDelayed(plugin, skyCenter,
-                task -> spawnConcentricRing(skyCenter, 5, innerRadius), 15L);
+        // Gradually increase TNT count as the radius increases (approx 3.2 blocks spacing between TNTs)
+        int innerCount = Math.max(4, Math.min(30, (int) Math.round(2 * Math.PI * innerRadius / 3.2)));
+        int midCount = Math.max(8, Math.min(60, (int) Math.round(2 * Math.PI * midRadius / 3.2)));
+        int outerCount = Math.max(12, Math.min(100, (int) Math.round(2 * Math.PI * outerRadius / 3.2)));
 
         plugin.getServer().getRegionScheduler().runDelayed(plugin, skyCenter,
-                task -> spawnConcentricRing(skyCenter, 12, midRadius), 20L);
+                task -> spawnConcentricRing(skyCenter, innerCount, innerRadius), 15L);
 
         plugin.getServer().getRegionScheduler().runDelayed(plugin, skyCenter,
-                task -> spawnConcentricRing(skyCenter, 20, outerRadius), 25L);
+                task -> spawnConcentricRing(skyCenter, midCount, midRadius), 20L);
+
+        plugin.getServer().getRegionScheduler().runDelayed(plugin, skyCenter,
+                task -> spawnConcentricRing(skyCenter, outerCount, outerRadius), 25L);
     }
 
     /**
@@ -172,6 +177,7 @@ public class StrikeManager implements Listener {
     /**
      * Uses Paper's AsyncScheduler to precompute circular ring trigonometry asynchronously,
      * then dispatches TNT entities safely to the regional chunk thread via RegionScheduler.
+     * Each TNT is tracked to detonate immediately upon contacting the surface.
      */
     private void spawnConcentricRing(Location center, int tntCount, double radius) {
         plugin.getServer().getAsyncScheduler().runNow(plugin, task -> {
@@ -189,9 +195,37 @@ public class StrikeManager implements Listener {
                 for (SpawnPayload p : payloads) {
                     Location spawnLoc = center.clone().add(p.x(), 0, p.z());
                     TNTPrimed tnt = world.spawn(spawnLoc, TNTPrimed.class);
-                    tnt.setFuseTicks(50);
-                    tnt.setVelocity(new Vector(p.x() * 0.05, -0.6, p.z() * 0.05));
+                    // Generous safety fuse so it never detonates in mid-air
+                    tnt.setFuseTicks(300);
+                    // Outward arc trajectory with downward force
+                    tnt.setVelocity(new Vector(p.x() * 0.04, -1.4, p.z() * 0.04));
                     tnt.getPersistentDataContainer().set(payloadKey, PersistentDataType.BYTE, (byte) 1);
+
+                    // Track entity impact on its native EntityScheduler
+                    tnt.getScheduler().runAtFixedRate(plugin, impactTask -> {
+                        if (!tnt.isValid() || tnt.isDead()) {
+                            impactTask.cancel();
+                            return;
+                        }
+
+                        // Maintain downward momentum while expanding
+                        Vector vel = tnt.getVelocity();
+                        tnt.setVelocity(new Vector(vel.getX(), Math.min(vel.getY(), -1.2), vel.getZ()));
+
+                        Location loc = tnt.getLocation();
+                        Block blockAt = loc.getBlock();
+                        Block blockBelow = loc.clone().subtract(0, 0.4, 0).getBlock();
+
+                        boolean hitSurface = tnt.isOnGround()
+                                || !blockAt.isPassable()
+                                || !blockBelow.isPassable()
+                                || loc.getY() <= world.getMinHeight() + 2;
+
+                        if (hitSurface) {
+                            tnt.setFuseTicks(0);
+                            impactTask.cancel();
+                        }
+                    }, null, 1L, 1L);
                 }
             });
         });

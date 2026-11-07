@@ -65,6 +65,12 @@ public final class OrbitalStrikePlugin extends JavaPlugin {
         saveConfig();
     }
 
+    public void setTerrainDamage(boolean terrainDamage) {
+        this.terrainDamage = terrainDamage;
+        getConfig().set("settings.terrain-damage", terrainDamage);
+        saveConfig();
+    }
+
     public void setNukeRadius(double radius) {
         this.nukeRadius = radius;
         getConfig().set("settings.nuke-radius", radius);
