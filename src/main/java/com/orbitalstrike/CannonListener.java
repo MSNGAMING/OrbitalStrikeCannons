@@ -9,6 +9,7 @@ import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.block.Block;
 import org.bukkit.entity.FishHook;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -46,9 +47,8 @@ public class CannonListener implements Listener {
     public void onPlayerFish(PlayerFishEvent event) {
         if (!plugin.isStrikesEnabled()) return;
 
-        // Only trigger on confirmed impacts (ground landing or entity caught)
-        if (event.getState() != PlayerFishEvent.State.IN_GROUND &&
-                event.getState() != PlayerFishEvent.State.CAUGHT_ENTITY) {
+        FishHook hook = event.getHook();
+        if (!isValidStrikeImpact(event, hook)) {
             return;
         }
 
@@ -58,7 +58,6 @@ public class CannonListener implements Listener {
 
         if (handItem.getType() != Material.FISHING_ROD && offHandItem.getType() != Material.FISHING_ROD) return;
 
-        FishHook hook = event.getHook();
         Location targetLocation = hook.getLocation();
         String typeLower = player.isSneaking() ? "nuke" : "stab";
 
@@ -104,6 +103,35 @@ public class CannonListener implements Listener {
     private void sendActionBarCooldown(Player player, long timeLeftMs) {
         double seconds = timeLeftMs / 1000.0;
         player.sendActionBar(Component.text("⚠️ System Recharging... Wait " + String.format("%.1f", seconds) + "s", NamedTextColor.RED));
+    }
+
+    /**
+     * Determines whether the reel-in event occurred at a valid target location.
+     * Prevents mid-air misfires while allowing strikes on land, water, foliage, and partial blocks.
+     */
+    private boolean isValidStrikeImpact(PlayerFishEvent event, FishHook hook) {
+        PlayerFishEvent.State state = event.getState();
+
+        // Direct ground latch or entity caught
+        if (state == PlayerFishEvent.State.IN_GROUND || state == PlayerFishEvent.State.CAUGHT_ENTITY || state == PlayerFishEvent.State.CAUGHT_FISH) {
+            return true;
+        }
+
+        // Smart REEL_IN: accept if hook has landed in water, foliage, partial blocks, or near a solid surface
+        if (state == PlayerFishEvent.State.REEL_IN) {
+            if (hook.isOnGround() || hook.isInWater()) {
+                return true;
+            }
+
+            Location loc = hook.getLocation();
+            Block at = loc.getBlock();
+            Block below = loc.clone().subtract(0, 0.6, 0).getBlock();
+
+            // Inside liquid, inside a solid/partial block, or resting on ground/surface below
+            return at.isLiquid() || !at.isPassable() || !below.isPassable() || below.isLiquid();
+        }
+
+        return false;
     }
 
     /**
